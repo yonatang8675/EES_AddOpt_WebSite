@@ -1,5 +1,7 @@
 # EES Add-Opt Demo Site
 
+**Live site:** <https://yonatangabay.csariel.xyz>
+
 A Flask web app that demonstrates the **Method of Equal Shares** with
 add-opt completion for participatory budgeting.
 
@@ -56,7 +58,8 @@ Notes:
 
 - `requirements.txt` installs the algorithm straight from the GitHub fork, so
   the server always tracks the latest branch.
-- The live site is served at `https://<username>.csariel.xyz`.
+- The live site is served at <https://yonatangabay.csariel.xyz>
+  (the URL follows the `https://<username>.csariel.xyz` pattern).
 - View server logs for debugging with `sudo myservice log`.
 
 ## Project structure
