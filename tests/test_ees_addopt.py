@@ -14,9 +14,9 @@ import unittest
 from app import app, EXAMPLE, parse_election_from_payload, InputError
 
 
-def _post(client, payload):
+def _post(client, payload, follow_redirects=True):
     """POST a JSON payload to /run and return the response."""
-    return client.post("/run", data={"payload": json.dumps(payload)})
+    return client.post("/run", data={"payload": json.dumps(payload)}, follow_redirects=follow_redirects)
 
 
 def _example_payload(**overrides):
@@ -50,6 +50,12 @@ class TestRoutes(unittest.TestCase):
         r = self.client.get("/favicon.ico")
         self.assertEqual(r.status_code, 200)
         self.assertIn("svg", r.content_type)
+
+    def test_unknown_result_id_is_handled(self):
+        # A stale or made-up result id should not 500; it shows a friendly page.
+        r = self.client.get("/result/deadbeef", follow_redirects=False)
+        self.assertEqual(r.status_code, 404)
+        self.assertIn(b"no longer available", r.data.lower())
 
 
 # ---------------------------------------------------------------------------
@@ -109,24 +115,24 @@ class TestInputValidation(unittest.TestCase):
         self.client = app.test_client()
 
     def test_missing_budget(self):
-        r = _post(self.client, _example_payload(budget=""))
+        r = _post(self.client, _example_payload(budget=""), follow_redirects=False)
         self.assertEqual(r.status_code, 400)
         self.assertIn(b"budget", r.data.lower())
 
     def test_negative_budget(self):
-        r = _post(self.client, _example_payload(budget="-5"))
+        r = _post(self.client, _example_payload(budget="-5"), follow_redirects=False)
         self.assertEqual(r.status_code, 400)
         self.assertIn(b"negative", r.data.lower())
 
     def test_no_projects(self):
-        r = _post(self.client, _example_payload(projects=[]))
+        r = _post(self.client, _example_payload(projects=[]), follow_redirects=False)
         self.assertEqual(r.status_code, 400)
         self.assertIn(b"project", r.data.lower())
 
     def test_project_without_name(self):
         r = _post(self.client, _example_payload(
             projects=[{"name": "", "cost": "5"}]
-        ))
+        ), follow_redirects=False)
         self.assertEqual(r.status_code, 400)
         self.assertIn(b"name", r.data.lower())
 
@@ -134,7 +140,7 @@ class TestInputValidation(unittest.TestCase):
         r = _post(self.client, _example_payload(
             projects=[{"name": "Park", "cost": "3"}, {"name": "Park", "cost": "5"}],
             voters=[[0]],
-        ))
+        ), follow_redirects=False)
         self.assertEqual(r.status_code, 400)
         self.assertIn(b"Park", r.data)
 
@@ -142,27 +148,38 @@ class TestInputValidation(unittest.TestCase):
         r = _post(self.client, _example_payload(
             projects=[{"name": "X", "cost": "abc"}],
             voters=[[0]],
-        ))
+        ), follow_redirects=False)
         self.assertEqual(r.status_code, 400)
         self.assertIn(b"not a valid number", r.data.lower())
 
     def test_no_voters(self):
-        r = _post(self.client, _example_payload(voters=[]))
+        r = _post(self.client, _example_payload(voters=[]), follow_redirects=False)
         self.assertEqual(r.status_code, 400)
         self.assertIn(b"voter", r.data.lower())
 
     def test_voter_index_out_of_range(self):
-        r = _post(self.client, _example_payload(voters=[[99]]))
+        r = _post(self.client, _example_payload(voters=[[99]]), follow_redirects=False)
         self.assertEqual(r.status_code, 400)
         self.assertIn(b"does not exist", r.data.lower())
 
     def test_empty_payload(self):
-        r = self.client.post("/run", data={"payload": ""})
+        r = self.client.post("/run", data={"payload": ""}, follow_redirects=False)
         self.assertEqual(r.status_code, 400)
 
     def test_malformed_json(self):
-        r = self.client.post("/run", data={"payload": "{broken"})
+        r = self.client.post("/run", data={"payload": "{broken"}, follow_redirects=False)
         self.assertEqual(r.status_code, 400)
+
+    def test_too_many_projects(self):
+        many = [{"name": f"P{i}", "cost": "1"} for i in range(60)]
+        r = _post(self.client, _example_payload(projects=many, voters=[[0]]), follow_redirects=False)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn(b"projects", r.data.lower())
+
+    def test_too_many_voters(self):
+        r = _post(self.client, _example_payload(voters=[[0]] * 200), follow_redirects=False)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn(b"voters", r.data.lower())
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +299,22 @@ class TestRandomInputs(unittest.TestCase):
         r = _post(app.test_client(), payload)
         self.assertEqual(r.status_code, 200)
         self.assertIn(b"No project", r.data)
+
+
+# ---------------------------------------------------------------------------
+# Result store (PRG persistence that must work across Gunicorn workers)
+# ---------------------------------------------------------------------------
+
+class TestResultStore(unittest.TestCase):
+    def test_store_and_load_roundtrip(self):
+        from app import _store_result, _load_result
+        result_id = _store_result({"hello": "world", "n": 3, "ok": True})
+        self.assertEqual(_load_result(result_id), {"hello": "world", "n": 3, "ok": True})
+
+    def test_load_rejects_unknown_and_traversal(self):
+        from app import _load_result
+        self.assertIsNone(_load_result("does-not-exist"))
+        self.assertIsNone(_load_result("../app"))
 
 
 if __name__ == "__main__":

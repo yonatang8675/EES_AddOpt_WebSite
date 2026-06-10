@@ -15,10 +15,15 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
+import tempfile
+import threading
+import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-from flask import Flask, Response, render_template, request
+from flask import Flask, Response, redirect, render_template, request, url_for
 
 from pabutools.election.ballot import ApprovalBallot
 from pabutools.election.instance import Instance, Project
@@ -33,8 +38,29 @@ from pabutools.rules.ees_addopt import (
 )
 
 app = Flask(__name__)
+# Reject oversized request bodies before they are read into memory. The largest
+# allowed election serialises to well under this, so it only blocks abuse.
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024  # 2 MB
 
 ALGORITHM_LOGGER = logging.getLogger("pabutools.rules.ees_addopt")
+
+# Upper bounds on a submitted election. These keep a single request from tying
+# up the server with an unreasonably large (or deliberately abusive) run.
+MAX_PROJECTS = 40
+MAX_VOTERS = 100
+
+# Computed results are written to a small on-disk store and shown via the
+# Post/Redirect/Get pattern. Using the filesystem (rather than a process-local
+# dict) keeps results reachable even when the production server runs the app in
+# several Gunicorn worker processes.
+_MAX_CACHED_RESULTS = 50
+_RESULTS_DIR = Path(tempfile.gettempdir()) / "ees_addopt_results"
+_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+_store_lock = threading.Lock()
+
+# Capturing the algorithm's log output temporarily reconfigures a shared logger,
+# so only one analysis may run at a time.
+_analysis_lock = threading.Lock()
 
 # A ready-made, relatable example used for the "Load example" button and the
 # first time the page is opened. Project indices in "voters" are 0-based and
@@ -94,6 +120,8 @@ def parse_election_from_payload(payload: Any) -> ParsedElection:
     raw_projects = payload.get("projects")
     if not isinstance(raw_projects, list) or not raw_projects:
         raise InputError("Add at least one project.")
+    if len(raw_projects) > MAX_PROJECTS:
+        raise InputError(f"Please use at most {MAX_PROJECTS} projects (you sent {len(raw_projects)}).")
 
     projects: list[Project] = []
     seen_names: set[str] = set()
@@ -111,6 +139,8 @@ def parse_election_from_payload(payload: Any) -> ParsedElection:
     raw_voters = payload.get("voters")
     if not isinstance(raw_voters, list) or not raw_voters:
         raise InputError("Add at least one voter.")
+    if len(raw_voters) > MAX_VOTERS:
+        raise InputError(f"Please use at most {MAX_VOTERS} voters (you sent {len(raw_voters)}).")
 
     ballots: list[ApprovalBallot] = []
     ballot_names: list[list[str]] = []
@@ -336,21 +366,22 @@ def analyze(parsed: ParsedElection) -> dict[str, Any]:
     log_stream = io.StringIO()
     handler = logging.StreamHandler(log_stream)
     handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
-    previous_level = ALGORITHM_LOGGER.level
-    previous_propagate = ALGORITHM_LOGGER.propagate
-    ALGORITHM_LOGGER.setLevel(logging.DEBUG)
-    ALGORITHM_LOGGER.propagate = False
-    ALGORITHM_LOGGER.addHandler(handler)
-    try:
-        rounds, completed_allocation, best_index = run_completion_with_steps(parsed)
-        base_allocation = rounds[0]["allocation"]
-        leftover_budgets = get_leftover_budgets(parsed.instance, parsed.profile, base_allocation)
-        leximax_payments = get_leximax_payment(base_allocation, len(parsed.profile), parsed.instance)
-        next_delta = rounds[0]["delta"]
-    finally:
-        ALGORITHM_LOGGER.removeHandler(handler)
-        ALGORITHM_LOGGER.setLevel(previous_level)
-        ALGORITHM_LOGGER.propagate = previous_propagate
+    with _analysis_lock:
+        previous_level = ALGORITHM_LOGGER.level
+        previous_propagate = ALGORITHM_LOGGER.propagate
+        ALGORITHM_LOGGER.setLevel(logging.DEBUG)
+        ALGORITHM_LOGGER.propagate = False
+        ALGORITHM_LOGGER.addHandler(handler)
+        try:
+            rounds, completed_allocation, best_index = run_completion_with_steps(parsed)
+            base_allocation = rounds[0]["allocation"]
+            leftover_budgets = get_leftover_budgets(parsed.instance, parsed.profile, base_allocation)
+            leximax_payments = get_leximax_payment(base_allocation, len(parsed.profile), parsed.instance)
+            next_delta = rounds[0]["delta"]
+        finally:
+            ALGORITHM_LOGGER.removeHandler(handler)
+            ALGORITHM_LOGGER.setLevel(previous_level)
+            ALGORITHM_LOGGER.propagate = previous_propagate
 
     number_of_voters = len(parsed.profile)
     budget_value = frac(parsed.budget)
@@ -443,6 +474,40 @@ def analyze(parsed: ParsedElection) -> dict[str, Any]:
     }
 
 
+def _store_result(result: dict[str, Any]) -> str:
+    """Persist a result on disk and return the id used in its PRG URL."""
+    result_id = uuid.uuid4().hex
+    destination = _RESULTS_DIR / f"{result_id}.json"
+    payload = json.dumps(result, default=str)
+    with _store_lock:
+        tmp = destination.with_name(destination.name + ".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(destination)  # atomic publish
+        _prune_results()
+    return result_id
+
+
+def _load_result(result_id: str) -> dict[str, Any] | None:
+    """Return a stored result, or None if the id is unknown or expired."""
+    if not result_id.isalnum():  # guard against path traversal
+        return None
+    path = _RESULTS_DIR / f"{result_id}.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _prune_results() -> None:
+    """Keep only the most recent results so the store cannot grow without bound."""
+    stored = sorted(_RESULTS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for stale in stored[_MAX_CACHED_RESULTS:]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+
 @app.get("/")
 def index():
     return render_template("index.html", initial_data=EXAMPLE, example_data=EXAMPLE, error=None)
@@ -465,15 +530,34 @@ def run_algorithm():
             render_template("index.html", initial_data=fallback, example_data=EXAMPLE, error=str(exc)),
             400,
         )
-    except Exception as exc:  # noqa: BLE001 - surface any unexpected failure to the user.
+    except Exception:  # noqa: BLE001 - log the details, show the visitor a safe message.
+        app.logger.exception("Unexpected error while running the election")
         return (
             render_template(
                 "index.html",
                 initial_data=fallback,
                 example_data=EXAMPLE,
-                error=f"Something went wrong while running the election: {exc}",
+                error="Something went wrong while running the election. "
+                "Please check your input and try again.",
             ),
-            400,
+            500,
+        )
+    result_id = _store_result(result)
+    return redirect(url_for("show_result", result_id=result_id))
+
+
+@app.get("/result/<result_id>")
+def show_result(result_id):
+    result = _load_result(result_id)
+    if result is None:
+        return (
+            render_template(
+                "index.html",
+                initial_data=EXAMPLE,
+                example_data=EXAMPLE,
+                error="That result is no longer available. Please run the election again.",
+            ),
+            404,
         )
     return render_template("result.html", result=result)
 
@@ -498,4 +582,5 @@ def favicon():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", "5000"))
+    app.run(debug=True, host="0.0.0.0", port=port)

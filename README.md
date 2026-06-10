@@ -23,14 +23,15 @@ python -m venv .venv
 # Windows:  .\.venv\Scripts\Activate.ps1
 # Linux/Mac: source .venv/bin/activate
 
-# 2. Install dependencies (installs Flask + pabutools from GitHub)
+# 2. Install dependencies (Flask, pabutools from GitHub, and gunicorn)
 pip install -r requirements.txt
 
 # 3. Run the site
 python app.py
 ```
 
-Open <http://127.0.0.1:5000> in your browser.
+Open <http://127.0.0.1:5000> in your browser. Set the `PORT` environment
+variable to run on a different port.
 
 ## Running tests
 
@@ -38,11 +39,31 @@ Open <http://127.0.0.1:5000> in your browser.
 python -m pytest tests/ -v
 ```
 
+## Deployment
+
+The site is built to run on the School of Computer Science server
+(see the [service guide](https://csariel.xyz/how-to/service)), where it is
+served by **Gunicorn** behind **Nginx** through a socket. In outline:
+
+1. Clone the repo into an `app` folder in your server home directory.
+2. Create and activate a virtual environment, then run
+   `pip install -r requirements.txt`.
+3. Keep the `app.run(debug=True, host="0.0.0.0", port=...)` block in `app.py`
+   — the managed service relies on it — then start the service with
+   `sudo myservice start`.
+
+Notes:
+
+- `requirements.txt` installs the algorithm straight from the GitHub fork, so
+  the server always tracks the latest branch.
+- The live site is served at `https://<username>.csariel.xyz`.
+- View server logs for debugging with `sudo myservice log`.
+
 ## Project structure
 
 ```
 ├── app.py                  Flask app: input parsing, algorithm execution, result rendering
-├── requirements.txt        Flask + pabutools (from GitHub)
+├── requirements.txt        Flask + pabutools (from GitHub) + gunicorn
 ├── static/
 │   ├── builder.js          Visual election builder (vanilla JS)
 │   └── styles.css          Site styles
@@ -52,7 +73,7 @@ python -m pytest tests/ -v
 │   ├── result.html         Step-by-step results with fairness numbers and logs
 │   └── about.html          How the method works + about the author
 └── tests/
-    └── test_ees_addopt.py  Algorithm and site integration tests
+    └── test_ees_addopt.py  Site route, validation, and integration tests
 ```
 
 ## Site features
@@ -75,3 +96,4 @@ python -m pytest tests/ -v
 |---|---|
 | [Flask](https://flask.palletsprojects.com/) | Web framework |
 | [pabutools](https://github.com/yonatang8675/pabutools) | EES add-opt algorithm and election model (installed from GitHub) |
+| [gunicorn](https://gunicorn.org/) | Production WSGI server used on the deployment host |
