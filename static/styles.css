@@ -885,6 +885,34 @@ tr.is-final td {
   color: #99afa8;
 }
 
+.log-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.log-filters {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.log-filter-label {
+  align-items: center;
+  cursor: pointer;
+  display: inline-flex;
+  font-weight: normal;
+  gap: 5px;
+}
+
+.log-filter-label input {
+  accent-color: var(--brand);
+  height: 15px;
+  margin: 0;
+  width: 15px;
+}
+
 .explainer-list {
   display: grid;
   gap: 10px;

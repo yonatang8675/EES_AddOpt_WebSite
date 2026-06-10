@@ -194,15 +194,28 @@
 <section class="panel log-panel">
   <h2>Algorithm log</h2>
   <p class="muted">{{ result.logs | length }} message{{ "" if result.logs | length == 1 else "s" }} from the algorithm's internal trace.</p>
-  <button type="button" class="secondary" id="toggle-logs" aria-expanded="false" aria-controls="log-list">Show the log</button>
+  <div class="log-controls">
+    <button type="button" class="secondary" id="toggle-logs" aria-expanded="false" aria-controls="log-list">Show the log</button>
+    <div class="log-filters" id="log-filters" hidden>
+      {% if 'info' in result.log_levels %}
+      <label class="log-filter-label"><input type="checkbox" checked data-level="info"><span class="log-badge log-badge-info">INFO</span></label>
+      {% endif %}
+      {% if 'debug' in result.log_levels %}
+      <label class="log-filter-label"><input type="checkbox" checked data-level="debug"><span class="log-badge log-badge-debug">DEBUG</span></label>
+      {% endif %}
+      {% if 'warning' in result.log_levels %}
+      <label class="log-filter-label"><input type="checkbox" checked data-level="warn"><span class="log-badge log-badge-warn">WARN</span></label>
+      {% endif %}
+    </div>
+  </div>
   <ol class="logs-list" id="log-list" dir="ltr" hidden>
     {% for line in result.logs %}
       {% if line.startswith('INFO:') %}
-        <li class="log-info"><span class="log-badge log-badge-info">INFO</span><span class="log-msg">{{ line[5:] }}</span></li>
+        <li class="log-info" data-level="info"><span class="log-badge log-badge-info">INFO</span><span class="log-msg">{{ line[5:] }}</span></li>
       {% elif line.startswith('DEBUG:') %}
-        <li class="log-debug"><span class="log-badge log-badge-debug">DEBUG</span><span class="log-msg">{{ line[6:] }}</span></li>
+        <li class="log-debug" data-level="debug"><span class="log-badge log-badge-debug">DEBUG</span><span class="log-msg">{{ line[6:] }}</span></li>
       {% elif line.startswith('WARNING:') %}
-        <li class="log-warn"><span class="log-badge log-badge-warn">WARN</span><span class="log-msg">{{ line[8:] }}</span></li>
+        <li class="log-warn" data-level="warn"><span class="log-badge log-badge-warn">WARN</span><span class="log-msg">{{ line[8:] }}</span></li>
       {% else %}
         <li><span class="log-msg">{{ line }}</span></li>
       {% endif %}
@@ -224,15 +237,27 @@
   (function () {
     var button = document.getElementById("toggle-logs");
     var list = document.getElementById("log-list");
-    if (!button || !list) {
-      return;
-    }
+    var filters = document.getElementById("log-filters");
+    if (!button || !list) return;
+
     button.addEventListener("click", function () {
       var willOpen = list.hidden;
       list.hidden = !willOpen;
+      if (filters) filters.hidden = !willOpen;
       button.setAttribute("aria-expanded", String(willOpen));
       button.textContent = willOpen ? "Hide the log" : "Show the log";
     });
+
+    if (filters) {
+      filters.addEventListener("change", function (e) {
+        var cb = e.target;
+        if (!cb.dataset.level) return;
+        var items = list.querySelectorAll('li[data-level="' + cb.dataset.level + '"]');
+        for (var i = 0; i < items.length; i++) {
+          items[i].style.display = cb.checked ? "" : "none";
+        }
+      });
+    }
   })();
 </script>
 {% endblock %}

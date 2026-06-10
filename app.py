@@ -439,6 +439,7 @@ def analyze(parsed: ParsedElection) -> dict[str, Any]:
         "next_delta": format_number(next_delta),
         "leftover_rows": leftover_rows,
         "logs": [line for line in log_stream.getvalue().splitlines() if line.strip()],
+        "log_levels": sorted({line.split(":", 1)[0].lower() for line in log_stream.getvalue().splitlines() if ":" in line and line.strip()}),
     }
 
 
