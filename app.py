@@ -29,6 +29,7 @@ from pabutools.rules.ees_addopt import (
     exact_equal_shares,
     get_leftover_budgets,
     get_leximax_payment,
+    greedy_project_change,
 )
 
 app = Flask(__name__)
@@ -244,6 +245,37 @@ def percent_of_budget(used: Any, budget: Any) -> float:
     return max(0.0, min(100.0, round(fraction, 1)))
 
 
+def compute_per_project_gpc(parsed: ParsedElection, virtual_instance: Instance, allocation: list[Project]) -> list[dict[str, Any]]:
+    """Call greedy_project_change for each project and return per-project delta info."""
+    profile = parsed.profile
+    number_of_voters = len(profile)
+    leftover_budgets = get_leftover_budgets(virtual_instance, profile, allocation)
+    leximax_payments = get_leximax_payment(allocation, number_of_voters, virtual_instance)
+
+    selected_set = set(allocation)
+    gpc_rows = []
+    for project in parsed.projects:
+        if project in selected_set:
+            gpc_rows.append({
+                "name": project.name,
+                "cost": format_number(project.cost),
+                "in_allocation": True,
+                "delta": None,
+            })
+        else:
+            delta = greedy_project_change(
+                virtual_instance, profile, allocation, project,
+                leftover_budgets, leximax_payments,
+            )
+            gpc_rows.append({
+                "name": project.name,
+                "cost": format_number(project.cost),
+                "in_allocation": False,
+                "delta": format_number(delta) if delta != float("inf") else "no supporters outside",
+            })
+    return gpc_rows
+
+
 def run_completion_with_steps(parsed: ParsedElection) -> tuple[list[dict[str, Any]], list[Project], int]:
     """Reproduce the add-opt completion loop, recording every round as a visible step.
 
@@ -267,6 +299,13 @@ def run_completion_with_steps(parsed: ParsedElection) -> tuple[list[dict[str, An
         cost = total_cost(list(allocation))
         fits = cost <= original_budget
         delta = add_opt(virtual_instance, profile, allocation)
+
+        # Detailed EES allocation info
+        allocation_summary = summarize_allocation(parsed, allocation)
+
+        # Per-project GPC deltas
+        gpc_rows = compute_per_project_gpc(parsed, virtual_instance, allocation)
+
         rounds.append(
             {
                 "allocation": allocation,
@@ -276,6 +315,8 @@ def run_completion_with_steps(parsed: ParsedElection) -> tuple[list[dict[str, An
                 "total_cost": cost,
                 "fits": fits,
                 "delta": delta,
+                "allocation_summary": allocation_summary,
+                "gpc_rows": gpc_rows,
             }
         )
         if fits and cost > best_cost:
@@ -351,15 +392,32 @@ def analyze(parsed: ParsedElection) -> dict[str, Any]:
             delta_display = None
         else:
             delta_display = format_number(delta_value)
+
+        alloc_summary = round_data["allocation_summary"]
+        gpc_rows = round_data["gpc_rows"]
+
+        # Find which project(s) had the minimum delta (driving the next round)
+        min_delta_project = None
+        if delta_display is not None:
+            for gpc in gpc_rows:
+                if not gpc["in_allocation"] and gpc["delta"] == delta_display:
+                    min_delta_project = gpc["name"]
+                    break
+
         completion_rounds.append(
             {
                 "number": index + 1,
                 "share": format_number(round_data["share"]),
+                "virtual_budget": format_number(round_data["virtual_budget"]),
                 "selected_display": ", ".join(round_data["selected"]) if round_data["selected"] else "no projects",
                 "total_cost": format_number(round_data["total_cost"]),
                 "fits": round_data["fits"],
                 "delta": delta_display,
                 "is_chosen": index == best_index,
+                "project_payments": alloc_summary["project_payments"],
+                "voter_rows": alloc_summary["voter_rows"],
+                "gpc_rows": gpc_rows,
+                "min_delta_project": min_delta_project,
             }
         )
 

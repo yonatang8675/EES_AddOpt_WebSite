@@ -177,12 +177,12 @@ class TestResultPage(unittest.TestCase):
         self.html = r.data.decode()
 
     def test_shows_input_recap(self):
-        self.assertIn("Your input", self.html)
         for p in EXAMPLE["projects"]:
             self.assertIn(p["name"], self.html)
 
     def test_shows_funded_projects(self):
-        self.assertIn("Funded project", self.html)
+        self.assertIn("Final result", self.html)
+        self.assertIn("Funded", self.html)
 
     def test_shows_equal_share(self):
         # Step 1: each voter's equal share
@@ -194,11 +194,11 @@ class TestResultPage(unittest.TestCase):
         self.assertIn("Kept", self.html)
 
     def test_shows_fairness_note(self):
-        self.assertIn("nobody spent more than their share", self.html)
+        self.assertIn("Fits budget", self.html)
 
     def test_shows_step_by_step(self):
-        self.assertIn("Step", self.html)
-        self.assertIn("step by step", self.html.lower())
+        self.assertIn("Round", self.html)
+        self.assertIn("EES", self.html)
 
     def test_shows_logs_section(self):
         self.assertIn("log", self.html.lower())
@@ -207,9 +207,9 @@ class TestResultPage(unittest.TestCase):
     def test_logs_have_content(self):
         # The algorithm should produce at least some log messages
         self.assertIn("log-list", self.html)
-        # At least one <li> inside the log list
+        # At least one log badge inside the log list
         import re
-        log_items = re.findall(r'<li>(?:INFO|DEBUG)', self.html)
+        log_items = re.findall(r'log-badge-(?:info|debug)', self.html)
         self.assertGreater(len(log_items), 0, "Logs should contain algorithm messages")
 
     def test_budget_meter(self):
@@ -249,10 +249,11 @@ class TestRandomInputs(unittest.TestCase):
         # Must contain input recap
         for p in payload["projects"]:
             self.assertIn(p["name"], html)
-        # Must contain funded projects section
-        self.assertIn("Funded project", html)
-        # Must contain fairness explanation
-        self.assertIn("equal share", html.lower())
+        # Must contain final result section
+        self.assertIn("Final result", html)
+        self.assertIn("Funded", html)
+        # Must contain rounds summary
+        self.assertIn("All rounds", html)
         # Must contain logs section
         self.assertIn("toggle-logs", html)
         return html
